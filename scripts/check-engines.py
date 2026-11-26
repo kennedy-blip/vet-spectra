@@ -17,7 +17,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from api.vet_physics import dispatch  # noqa: E402
+from server.vet_physics import dispatch  # noqa: E402
 
 FAILURES: list[str] = []
 

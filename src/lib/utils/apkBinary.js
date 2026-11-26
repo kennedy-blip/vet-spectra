@@ -188,7 +188,7 @@ function buildRecord() {
 		targetSdk: TARGET_SDK,
 		stack: {
 			ui: 'SvelteKit 2 + Svelte 4 (pure ES2024 .js)',
-			api: 'Python 3.12 serverless (api/vet_physics.py)',
+			api: 'Python 3.12 serverless (server/vet_physics.py)',
 			android: 'Kotlin Capacitor 6 plugins',
 			shaders: 'GLSL ES 3.00 WebGL2'
 		},

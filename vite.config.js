@@ -7,7 +7,7 @@ import { defineConfig } from 'vite';
  * The workstation is offline-first: every clinical engine runs in the browser and
  * the IndexedDB vault is the record of truth. The Python physics API is optional
  * and is proxied here so the running preview (and `npm run dev`) can reach
- * `python3 api/vet_physics.py` on :8099 without CORS or hard-coded hosts.
+ * `python3 server/vet_physics.py` on :8099 without CORS or hard-coded hosts.
  */
 const API_PROXY = {
 	'/api': {

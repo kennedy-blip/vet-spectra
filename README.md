@@ -18,7 +18,7 @@ src/
   lib/gl/, shaders/    WebGL macro lens (GLSL via ?raw)
   routes/             SvelteKit SPA shell
 python_vet/           Python mirrors of the toxicology + gait/acoustic engines
-api/vet_physics.py    stdlib HTTP server (local) / api/index.py WSGI (Vercel)
+server/vet_physics.py stdlib HTTP server (local) / api/index.py WSGI (Vercel)
 android/              Capacitor 6 host + two Kotlin sensor plugins
 ```
 
@@ -46,7 +46,7 @@ npm run build && npm run preview   # http://localhost:4173
 Optional Python API (the Vite dev/preview server proxies `/api` → `:8099`):
 
 ```bash
-python3 api/vet_physics.py        # http://0.0.0.0:8099/api/vet_physics
+python3 server/vet_physics.py     # http://0.0.0.0:8099/api/vet_physics
 ```
 
 ## Verify
