@@ -56,7 +56,7 @@ npm test                      # 16 in-browser engine assertions, browserless
 npm run test:py               # Python mirrors through the same API router
 npm run build                 # adapter-static → build/
 
-python3 -m compileall -q python_vet api
+python3 -m compileall -q python_vet server api
 curl -s localhost:8099/api/vet_physics
 curl -s -X POST localhost:8099/api/vet_physics \
   -H 'content-type: application/json' \
@@ -75,6 +75,22 @@ Reference numbers both engines must agree on:
 | PCG `normal` / `mmvd` | SMER `0.4 %` grade I / `18 %` grade V + thrill |
 | Scutal index 8.2 ÷ 3.6 mm | `57.3 h` attached → Lyme band |
 | Quote `dental` $1200 with duplicated anesthesia | `duplicate` + `unbundling` flags |
+
+## Production smoke
+
+`production-smoke.yml` probes the *deployed* site instead of the build:
+
+```bash
+gh workflow run production-smoke.yml                      # default https://vet-spectra.vercel.app
+gh workflow run production-smoke.yml -f base_url=https://<preview>.vercel.app
+```
+
+It asserts `GET /` → 200 with the app title, `GET /api/vet_physics` →
+`27.0.0-polyglot` with `"engines":5`, `HEAD /releases/vet-spectra-v27.0.0.apk` →
+`30x` pointing at the GitHub latest release, and the followed download → `200`,
+> 1 MB, `PK` header. Every probe is printed, added to the job summary and
+uploaded as the `smoke-report` artifact, so a red run says which hop broke.
+Last run against production: green (`success`, 9 s).
 
 ## API
 
