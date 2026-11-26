@@ -1,0 +1,138 @@
+name: Build & bundle APK
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: apk-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Web bundle — runs the engine self-test suite, then the static build.
+  # ---------------------------------------------------------------------------
+  web:
+    name: SvelteKit bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Engine self-tests (16 assertions, browserless)
+        run: |
+          node --input-type=module -e "
+          import { runSelfTests } from './src/lib/selftests/vetSelfTestSuite.js';
+          const { results, passed, total } = await runSelfTests();
+          for (const r of results) console.log((r.pass ? 'PASS' : 'FAIL').padEnd(5), r.name, '|', r.actual);
+          if (passed !== total) { console.error(\`\${passed}/\${total} assertions passed\`); process.exit(1); }
+          console.log(\`\${passed}/\${total} assertions passed\`);
+          "
+
+      - name: Python engine checks
+        run: |
+          python3 -m compileall -q python_vet api
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, '.')
+          from python_vet.toxicology_allometry_solver import evaluate_toxin, fluid_plan
+          from python_vet.quadruped_gait_acoustic_biometrics import analyze_gait
+          dose = evaluate_toxin(weight_kg=12, mass_g=85, matrix_key='dark70', species='dog')
+          assert abs(dose['dose_total_mg_kg'] - 53.83) < 0.05, dose['dose_total_mg_kg']
+          assert dose['zone']['key'] == 'cardio'
+          fluids = fluid_plan(weight_kg=12, dehydration_pct=5, species='dog')
+          assert abs(fluids['deficit_volume'] - 600) < 0.01
+          gait = analyze_gait('left_fore_3')
+          assert gait['dominant_lai_pct'] > 12 and gait['lame_limb'] == 'LF'
+          assert gait['phase_limb'] == 'LF', gait['phase_limb']
+          print('python engines OK')
+          PY
+
+      - name: Build static bundle
+        run: npm run build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-build
+          path: build
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # 2. Android — sync the bundle into the WebView asset dir and assemble.
+  # ---------------------------------------------------------------------------
+  apk:
+    name: Android APK
+    needs: web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-build
+          path: build
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.7'
+
+      - name: Sync web bundle into the WebView
+        run: |
+          mkdir -p android/app/src/main/assets
+          rm -rf android/app/src/main/assets/public
+          cp -R build android/app/src/main/assets/public
+          echo "Bundled $(find android/app/src/main/assets/public -type f | wc -l) files"
+
+      - name: Assemble debug APK
+        working-directory: android
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Rename and expose the APK in the download route
+        run: |
+          APK=$(find android/app/build/outputs/apk/debug -name '*.apk' | head -1)
+          echo "APK=$APK"
+          mkdir -p static/releases
+          cp "$APK" static/releases/vet-spectra-v27.0.0.apk
+          ls -lh static/releases
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vet-spectra-apk
+          path: static/releases/vet-spectra-v27.0.0.apk
+          retention-days: 30
+
+      - name: Attach APK to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: static/releases/vet-spectra-v27.0.0.apk
+          generate_release_notes: true
