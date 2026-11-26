@@ -60,24 +60,20 @@ class VetRawAcousticImuPlugin : Plugin(), SensorEventListener {
         gyro = sensorManager?.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
     }
 
+    /** Explicit permission request — Capacitor's own check/request stay untouched. */
     @PluginMethod
-    override fun checkPermissions(call: PluginCall) {
-        super.checkPermissions(call)
-    }
-
-    @PluginMethod
-    override fun requestPermissions(call: PluginCall) {
+    fun requestMicrophone(call: PluginCall) {
         if (getPermissionState("microphone") == com.getcapacitor.PermissionState.GRANTED) {
-            call.resolve()
+            call.resolve(JSObject().put("microphone", true))
             return
         }
         requestPermissionForAlias("microphone", call, "microphonePermsCallback")
     }
 
     @PermissionCallback
-    private fun microphonePermsCallback(call: PluginCall) {
+    fun microphonePermsCallback(call: PluginCall) {
         if (getPermissionState("microphone") == com.getcapacitor.PermissionState.GRANTED) {
-            call.resolve()
+            call.resolve(JSObject().put("microphone", true))
         } else {
             call.reject("RECORD_AUDIO denied — acoustic capture unavailable.")
         }
