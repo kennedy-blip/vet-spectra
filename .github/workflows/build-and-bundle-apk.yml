@@ -129,13 +129,58 @@ jobs:
           test -f android/app/src/main/assets/capacitor.config.json
           echo "assets: $(find android/app/src/main/assets/public -type f | wc -l) files"
 
-      - name: Assemble debug APK
+      # Release signing is opt-in: the four secrets below hold a keystore that
+      # must never live in the repository (this repo is public). Without them the
+      # workflow still ships an installable APK, just debug-signed.
+      #   ANDROID_KEYSTORE_BASE64    base64 -w0 of the .p12/.jks keystore
+      #   ANDROID_KEYSTORE_PASSWORD  store password
+      #   ANDROID_KEY_ALIAS          key alias inside the keystore
+      #   ANDROID_KEY_PASSWORD       key password (same as the store password for PKCS12)
+      - name: Configure APK signing
+        id: signing
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEYSTORE_B64}" ]; then
+            echo "No ANDROID_KEYSTORE_BASE64 secret — the APK will be debug-signed."
+            echo "apk_task=assembleDebug" >> "$GITHUB_OUTPUT"
+            echo "apk_dir=debug"          >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          KEYSTORE="$RUNNER_TEMP/vet-spectra-release.p12"
+          printf '%s' "${KEYSTORE_B64}" | base64 -d > "$KEYSTORE"
+          test -s "$KEYSTORE"
+          {
+            echo "VET_KEYSTORE_PATH=$KEYSTORE"
+            echo "VET_KEYSTORE_PASSWORD=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}"
+            echo "VET_KEY_ALIAS=${{ secrets.ANDROID_KEY_ALIAS }}"
+            echo "VET_KEY_PASSWORD=${{ secrets.ANDROID_KEY_PASSWORD }}"
+          } >> "$GITHUB_ENV"
+          echo "apk_task=assembleRelease" >> "$GITHUB_OUTPUT"
+          echo "apk_dir=release"          >> "$GITHUB_OUTPUT"
+          echo "Release signing enabled (alias ${{ secrets.ANDROID_KEY_ALIAS }})."
+
+      - name: Assemble APK
         working-directory: android
-        run: gradle assembleDebug --no-daemon --stacktrace --warning-mode=summary
+        run: gradle ${{ steps.signing.outputs.apk_task }} --no-daemon --stacktrace --warning-mode=summary
+
+      - name: Verify the release signature
+        if: steps.signing.outputs.apk_dir == 'release'
+        run: |
+          set -euo pipefail
+          APK_PATH=$(find android/app/build/outputs/apk/release -name '*.apk' | head -1)
+          test -n "$APK_PATH"
+          APKSIGNER=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner
+          "$APKSIGNER" verify --verbose --print-certs "$APK_PATH"
+          # A debug keystore would mean the secrets are wrong — fail loudly.
+          if "$APKSIGNER" verify --print-certs "$APK_PATH" | grep -qi 'CN=Android Debug'; then
+            echo "APK is debug-signed despite the signing secrets being present"; exit 1
+          fi
 
       - name: Publish the APK as a workflow artifact
         run: |
-          APK_PATH=$(find android/app/build/outputs/apk/debug -name '*.apk' | head -1)
+          APK_PATH=$(find android/app/build/outputs/apk/${{ steps.signing.outputs.apk_dir }} -name '*.apk' | head -1)
           if [ -z "$APK_PATH" ]; then echo "No APK produced"; find android/app/build/outputs -maxdepth 3 -type f; exit 1; fi
           mkdir -p dist
           cp "$APK_PATH" "dist/${APK_NAME}"
@@ -149,6 +194,19 @@ jobs:
           name: vet-spectra-apk
           path: dist/${{ env.APK_NAME }}
           retention-days: 30
+
+      - name: Record the signing mode
+        run: |
+          {
+            echo "### APK \`${APK_NAME}\`"
+            if [ "${{ steps.signing.outputs.apk_dir }}" = "release" ]; then
+              echo "Release-signed with the \`${{ secrets.ANDROID_KEY_ALIAS }}\` key (not the debug key)."
+            else
+              echo "Debug-signed — add the four \`ANDROID_KEY*\` secrets to ship a release-signed APK."
+            fi
+            echo ""
+            echo "SHA-256 of the artifact: \`$(sha256sum "dist/${APK_NAME}" | cut -d' ' -f1)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Attach the APK to the GitHub release
         if: startsWith(github.ref, 'refs/tags/v')

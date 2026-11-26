@@ -109,9 +109,37 @@ holds the two native bridges the web layer expects:
    (JS↔Python parity), `npm run build`, artifact upload.
 2. **Release APK** — downloads that bundle, runs `npx cap copy android`
    (web assets + `capacitor.config.json` land in `android/app/src/main/assets/`),
-   `gradle assembleDebug`, verifies the APK is a real zip containing `classes.dex`,
-   uploads `vet-spectra-v27.0.0.apk`, and attaches it to the GitHub release on a
-   `v*` tag.
+   assembles the APK, verifies it is a real zip containing `classes.dex`, uploads
+   `vet-spectra-v27.0.0.apk`, and attaches it to the GitHub release on a `v*` tag.
+
+### Release signing
+
+The APK task is chosen by the `Configure APK signing` step:
+
+| secret | meaning |
+| --- | --- |
+| `ANDROID_KEYSTORE_BASE64` | `base64 -w0` of the keystore (`.p12`/`.jks`) |
+| `ANDROID_KEYSTORE_PASSWORD` | store password |
+| `ANDROID_KEY_ALIAS` | key alias, currently `vet-spectra` |
+| `ANDROID_KEY_PASSWORD` | key password (equal to the store password for PKCS12) |
+
+All four present → `gradle assembleRelease`, then `apksigner verify --print-certs`
+and the job fails if the certificate still says `CN=Android Debug`. Any of them
+missing → `gradle assembleDebug`, so a fork or a fresh clone still produces an
+installable APK. The keystore is never committed: it is git-ignored under
+`android/signing-backup/` (with the password and the certificate fingerprint in
+`CREDENTIALS.txt`); add it to the repository secrets to switch signing on.
+
+```bash
+gh secret set ANDROID_KEYSTORE_BASE64 --body "$(base64 -w0 android/signing-backup/vet-spectra-release.p12)"
+gh secret set ANDROID_KEYSTORE_PASSWORD --body '<store password>'
+gh secret set ANDROID_KEY_ALIAS --body 'vet-spectra'
+gh secret set ANDROID_KEY_PASSWORD --body '<key password>'
+```
+
+Tagging is what publishes: `git tag v27.0.0 && git push origin v27.0.0` builds the
+APK and creates the `v27.0.0` GitHub release with the asset attached (the workflow
+needs `permissions: contents: write` for that step).
 
 The download route `/releases/vet-spectra-v27.0.0.apk` is redirected by
 `vercel.json` to `releases/latest/download/vet-spectra-v27.0.0.apk`, so the QR code
@@ -120,9 +148,26 @@ and the download button always serve the newest release APK. If no release exist
 
 ## Deploy (Vercel)
 
+Live production: **https://vet-spectra.vercel.app** (project `vet-spectra`, team
+`kmokaya864-5310`, framework *svelte*, build `npm run build`, output `build`,
+install `npm ci`, production branch `main`).
+
 `vercel.json` builds `npm run build` into `build/`, rewrites SPA routes to
 `index.html`, proxies `/api/vet_physics` to the Python WSGI entry point
 (`api/index.py`) and sets immutable caching for hashed assets.
+
+Two things matter for the Python function:
+
+- `api/` must contain **only** the entry point — Vercel turns every `.py` under it
+  into a function, so the router lives in `server/vet_physics.py` and `api/index.py`
+  imports it statically (the tracer follows imports, not `importlib` loads).
+- `vercel.json` routes `/api/vet_physics` to `/api/index`; anything else under
+  `/api` is not rewritten.
+
+```bash
+curl -s https://vet-spectra.vercel.app/api/vet_physics   # {"ok":true,...,"version":"27.0.0-polyglot"}
+curl -sI https://vet-spectra.vercel.app/releases/vet-spectra-v27.0.0.apk   # 307 -> releases/latest/download/...
+```
 
 ## Notes
 
