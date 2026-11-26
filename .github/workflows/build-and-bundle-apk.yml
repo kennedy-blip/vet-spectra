@@ -14,13 +14,15 @@ concurrency:
 
 env:
   NODE_VERSION: '22'
+  PYTHON_VERSION: '3.11'
+  APK_NAME: vet-spectra-v27.0.0.apk
 
 jobs:
   # ---------------------------------------------------------------------------
-  # 1. Web bundle — runs the engine self-test suite, then the static build.
+  # 1. Web bundle — engine self-tests first, then the static build.
   # ---------------------------------------------------------------------------
   web:
-    name: SvelteKit bundle
+    name: Engines & web bundle
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,40 +32,29 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
 
-      - name: Engine self-tests (16 assertions, browserless)
-        run: |
-          node --input-type=module -e "
-          import { runSelfTests } from './src/lib/selftests/vetSelfTestSuite.js';
-          const { results, passed, total } = await runSelfTests();
-          for (const r of results) console.log((r.pass ? 'PASS' : 'FAIL').padEnd(5), r.name, '|', r.actual);
-          if (passed !== total) { console.error(\`\${passed}/\${total} assertions passed\`); process.exit(1); }
-          console.log(\`\${passed}/\${total} assertions passed\`);
-          "
+      - name: Browserless engine self-tests (16 JS assertions)
+        run: npm test
 
-      - name: Python engine checks
+      - name: Python mirror checks (JS/Python parity)
         run: |
           python3 -m compileall -q python_vet api
-          python3 - <<'PY'
-          import sys
-          sys.path.insert(0, '.')
-          from python_vet.toxicology_allometry_solver import evaluate_toxin, fluid_plan
-          from python_vet.quadruped_gait_acoustic_biometrics import analyze_gait
-          dose = evaluate_toxin(weight_kg=12, mass_g=85, matrix_key='dark70', species='dog')
-          assert abs(dose['dose_total_mg_kg'] - 53.83) < 0.05, dose['dose_total_mg_kg']
-          assert dose['zone']['key'] == 'cardio'
-          fluids = fluid_plan(weight_kg=12, dehydration_pct=5, species='dog')
-          assert abs(fluids['deficit_volume'] - 600) < 0.01
-          gait = analyze_gait('left_fore_3')
-          assert gait['dominant_lai_pct'] > 12 and gait['lame_limb'] == 'LF'
-          assert gait['phase_limb'] == 'LF', gait['phase_limb']
-          print('python engines OK')
-          PY
+          python3 scripts/check-engines.py
 
       - name: Build static bundle
         run: npm run build
+
+      - name: Assert the bundle is a real SPA build
+        run: |
+          test -f build/index.html
+          test -d build/_app/immutable
+          echo "bundle: $(find build -type f | wc -l) files, $(du -sh build | cut -f1)"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -72,10 +63,10 @@ jobs:
           retention-days: 7
 
   # ---------------------------------------------------------------------------
-  # 2. Android — sync the bundle into the WebView asset dir and assemble.
+  # 2. Android — capacitor copy into the WebView asset dir, then assemble.
   # ---------------------------------------------------------------------------
   apk:
-    name: Android APK
+    name: Release APK
     needs: web
     runs-on: ubuntu-latest
     steps:
@@ -101,38 +92,48 @@ jobs:
 
       - uses: android-actions/setup-android@v3
 
-      - uses: gradle/actions/setup-gradle@v3
+      - name: Install Android SDK packages
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" > /dev/null
+          sdkmanager --list_installed | sed -n '1,12p'
+
+      - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
 
-      - name: Sync web bundle into the WebView
+      - name: Copy the web bundle into the Capacitor platform
         run: |
-          mkdir -p android/app/src/main/assets
-          rm -rf android/app/src/main/assets/public
-          cp -R build android/app/src/main/assets/public
-          echo "Bundled $(find android/app/src/main/assets/public -type f | wc -l) files"
+          npx cap copy android
+          test -f android/app/src/main/assets/public/index.html
+          test -f android/app/src/main/assets/capacitor.config.json
+          echo "assets: $(find android/app/src/main/assets/public -type f | wc -l) files"
 
       - name: Assemble debug APK
         working-directory: android
-        run: gradle assembleDebug --no-daemon --stacktrace
+        run: gradle assembleDebug --no-daemon --stacktrace --warning-mode=summary
 
-      - name: Rename and expose the APK in the download route
+      - name: Publish the APK as a workflow artifact
         run: |
-          APK=$(find android/app/build/outputs/apk/debug -name '*.apk' | head -1)
-          echo "APK=$APK"
-          mkdir -p static/releases
-          cp "$APK" static/releases/vet-spectra-v27.0.0.apk
-          ls -lh static/releases
+          APK_PATH=$(find android/app/build/outputs/apk/debug -name '*.apk' | head -1)
+          if [ -z "$APK_PATH" ]; then echo "No APK produced"; find android/app/build/outputs -maxdepth 3 -type f; exit 1; fi
+          mkdir -p dist
+          cp "$APK_PATH" "dist/${APK_NAME}"
+          ls -lh "dist/${APK_NAME}"
+          # sanity: a real APK is a zip starting with PK and contains classes.dex
+          head -c 2 "dist/${APK_NAME}" | grep -q PK
+          unzip -l "dist/${APK_NAME}" | grep -q "classes.dex"
 
       - uses: actions/upload-artifact@v4
         with:
           name: vet-spectra-apk
-          path: static/releases/vet-spectra-v27.0.0.apk
+          path: dist/${{ env.APK_NAME }}
           retention-days: 30
 
-      - name: Attach APK to the release
+      - name: Attach the APK to the GitHub release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: static/releases/vet-spectra-v27.0.0.apk
+          files: dist/${{ env.APK_NAME }}
           generate_release_notes: true
+          fail_on_unmatched_files: true

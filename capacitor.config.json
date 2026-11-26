@@ -2,7 +2,6 @@
   "appId": "com.vetspectra.clinical",
   "appName": "VET-SPECTRA",
   "webDir": "build",
-  "bundledWebRuntime": false,
   "android": {
     "allowMixedContent": false,
     "captureInput": true,

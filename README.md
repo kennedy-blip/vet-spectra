@@ -52,8 +52,9 @@ python3 api/vet_physics.py        # http://0.0.0.0:8099/api/vet_physics
 ## Verify
 
 ```bash
-npm run build                                   # adapter-static → build/
-node --input-type=module -e "import('./src/lib/selftests/vetSelfTestSuite.js').then(async m => { const r = await m.runSelfTests(); console.log(r.passed + '/' + r.total); process.exit(r.ok ? 0 : 1); })"
+npm test                      # 16 in-browser engine assertions, browserless
+npm run test:py               # Python mirrors through the same API router
+npm run build                 # adapter-static → build/
 
 python3 -m compileall -q python_vet api
 curl -s localhost:8099/api/vet_physics
@@ -102,9 +103,20 @@ holds the two native bridges the web layer expects:
 - `VetMacroCameraTorch` — torch level control and lens facts (focal length, minimum
   focus distance, zoom range) for the macro lens HUD.
 
-`.github/workflows/build-and-bundle-apk.yml` runs the self-tests, builds the static
-bundle, syncs it into `android/app/src/main/assets/public`, assembles the APK and
-publishes it to `static/releases/` (and to the GitHub release on a `v*` tag).
+`.github/workflows/build-and-bundle-apk.yml` has two jobs:
+
+1. **Engines & web bundle** — `npm test` (16 assertions), `scripts/check-engines.py`
+   (JS↔Python parity), `npm run build`, artifact upload.
+2. **Release APK** — downloads that bundle, runs `npx cap copy android`
+   (web assets + `capacitor.config.json` land in `android/app/src/main/assets/`),
+   `gradle assembleDebug`, verifies the APK is a real zip containing `classes.dex`,
+   uploads `vet-spectra-v27.0.0.apk`, and attaches it to the GitHub release on a
+   `v*` tag.
+
+The download route `/releases/vet-spectra-v27.0.0.apk` is redirected by
+`vercel.json` to `releases/latest/download/vet-spectra-v27.0.0.apk`, so the QR code
+and the download button always serve the newest release APK. If no release exists
+(or the device is offline) the modal falls back to the in-browser replica build.
 
 ## Deploy (Vercel)
 
