@@ -8,6 +8,12 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# softprops/action-gh-release creates the release and pulls the auto-generated
+# notes through the REST API, which the default read-only token cannot do
+# ("Resource not accessible by integration").
+permissions:
+  contents: write
+
 concurrency:
   group: apk-${{ github.ref }}
   cancel-in-progress: true
