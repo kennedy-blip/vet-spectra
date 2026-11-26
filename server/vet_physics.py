@@ -406,7 +406,7 @@ class handler(BaseHTTPRequestHandler):
         self._respond(200 if result.get("ok") else 400, result)
 
 
-# Local development entry point:  python api/vet_physics.py
+# Local development entry point:  python3 server/vet_physics.py
 if __name__ == "__main__":
     from http.server import ThreadingHTTPServer
 

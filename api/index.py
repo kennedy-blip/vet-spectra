@@ -1,43 +1,32 @@
 """
 Vercel entry point for the VET-SPECTRA physics API.
 
-`vet_physics.py` is a stdlib `BaseHTTPRequestHandler` server so it can be run
-locally with `python api/vet_physics.py`. Vercel needs a callable instead, so this
-module exposes a minimal WSGI `app` that forwards GET/POST to the same
+`server/vet_physics.py` is a stdlib `BaseHTTPRequestHandler` server so it can be
+run locally with `python3 server/vet_physics.py`. Vercel needs a callable instead,
+so this module exposes a minimal WSGI `app` that forwards GET/POST to the same
 `dispatch()` router — identical responses, identical CORS headers, no duplicated
 business logic.
 
+The import below is deliberately a *static* import: Vercel's Python builder traces
+imports to decide what to bundle, so an importlib-by-path loader would leave the
+router behind.
+
 Local smoke test:
-    python -c "from api.index import dispatch; print(dispatch({'action':'health'}))"
+    python3 -c "from api.index import dispatch; print(dispatch({'action':'health'}))"
 """
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
+import sys
 from typing import Any, Callable, Iterable
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_ROOT = os.path.dirname(_HERE)
-if _ROOT not in os.environ.get("PYTHONPATH", "").split(os.pathsep):
-    import sys
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
-    if _ROOT not in sys.path:
-        sys.path.insert(0, _ROOT)
-
-
-def _load_router() -> Callable[[dict[str, Any]], dict[str, Any]]:
-    """Import the sibling router without requiring the api/ folder to be a package."""
-    spec = importlib.util.spec_from_file_location("vet_physics", os.path.join(_HERE, "vet_physics.py"))
-    if spec is None or spec.loader is None:  # pragma: no cover - packaging guard
-        raise RuntimeError("api/vet_physics.py is missing from the deployment bundle")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.dispatch
-
-
-dispatch = _load_router()
+from server.vet_physics import dispatch  # noqa: E402  (path set up above)
 
 MAX_BODY_BYTES = 512 * 1024
 
