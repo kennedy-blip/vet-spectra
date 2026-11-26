@@ -1,0 +1,68 @@
+name: Production smoke
+
+# Manual check against the deployed site (Vercel deploys on every push to main,
+# so the runner is the cheapest honest way to see the real headers).
+#   gh workflow run production-smoke.yml
+#   gh workflow run production-smoke.yml -f base_url=https://some-preview.vercel.app
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Base URL to probe
+        required: false
+        default: https://vet-spectra.vercel.app
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Probe the deployed site
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Site, API and APK download
+        env:
+          BASE: ${{ inputs.base_url }}
+        run: |
+          set -euo pipefail
+          BASE="${BASE:-https://vet-spectra.vercel.app}"
+          echo "probing ${BASE}"
+
+          root=$(curl -sS -o /tmp/index.html -w '%{http_code}' --max-time 30 "$BASE/")
+          echo "GET /                                  -> ${root}"
+          test "$root" = "200"
+          grep -q 'VET-SPECTRA' /tmp/index.html
+          grep -q 'Kleiber' /tmp/index.html
+
+          api=$(curl -sS --max-time 30 "$BASE/api/vet_physics")
+          echo "GET /api/vet_physics                   -> ${api}"
+          printf '%s' "$api" | grep -q '"version":"27.0.0-polyglot"'
+          printf '%s' "$api" | grep -q '"engines":5'
+
+          echo "HEAD /releases/vet-spectra-v27.0.0.apk"
+          head=$(curl -sSI --max-time 30 "$BASE/releases/vet-spectra-v27.0.0.apk")
+          printf '%s\n' "$head" | sed -n '1p;/^location/Ip'
+          printf '%s\n' "$head" | head -1 | grep -qE ' 30[1278]'
+          printf '%s\n' "$head" | grep -qi 'location: https://github.com/kennedy-blip/vet-spectra/releases/latest/download/vet-spectra-v27.0.0.apk'
+          printf '%s\n' "$head" | grep -qi 'content-disposition: attachment'
+
+          code=$(curl -sSL -o /tmp/app.apk -w '%{http_code}' --max-time 120 "$BASE/releases/vet-spectra-v27.0.0.apk")
+          size=$(stat -c %s /tmp/app.apk)
+          echo "followed download                      -> HTTP ${code}, ${size} bytes"
+          test "$code" = "200"
+          test "$size" -gt 1000000
+          head -c 2 /tmp/app.apk | grep -q PK
+
+          {
+            echo "### Production smoke — ${BASE}"
+            echo ""
+            echo "| probe | result |"
+            echo "| --- | --- |"
+            echo "| \`GET /\` | ${root} |"
+            echo "| \`GET /api/vet_physics\` | 200, \`27.0.0-polyglot\` |"
+            echo "| \`HEAD /releases/vet-spectra-v27.0.0.apk\` | 307 → GitHub latest release |"
+            echo "| download follows through | ${code}, ${size} bytes, PK header present |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "smoke: OK"
