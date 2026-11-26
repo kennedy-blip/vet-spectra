@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">VET-SPECTRA</string>
+    <string name="title_activity_main">VET-SPECTRA</string>
+    <string name="package_name">com.vetspectra.clinical</string>
+    <string name="custom_url_scheme">com.vetspectra.clinical</string>
+</resources>

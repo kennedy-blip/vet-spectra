@@ -1,0 +1,7 @@
+// Auto-generated equivalent of `npx cap sync`; kept in-tree so CI need not run it.
+android {
+    defaultConfig {
+        versionCode 27
+        versionName "27.0.0-polyglot"
+    }
+}

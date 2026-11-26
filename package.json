@@ -1,0 +1,29 @@
+{
+  "name": "vet-spectra",
+  "version": "27.0.0",
+  "private": true,
+  "type": "module",
+  "description": "VET-SPECTRA — precision veterinary toxicology (mg/kg) shield, canine/feline bio-acoustic airway lab, quadruped gait kinematics, ACVIM sleeping respiratory rate monitor and tick scutal-index Lyme timer.",
+  "scripts": {
+    "dev": "vite dev --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "check": "svelte-kit sync",
+    "test": "node scripts/self-test.mjs",
+    "test:py": "python3 scripts/check-engines.py",
+    "cap:sync": "npx cap sync android",
+    "apk": "npx cap sync android && cd android && ./gradlew assembleDebug"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.2.0",
+    "@sveltejs/adapter-static": "^3.0.5",
+    "@sveltejs/kit": "^2.5.28",
+    "@sveltejs/vite-plugin-svelte": "3.1.2",
+    "svelte": "4.2.20",
+    "vite": "5.4.21"
+  },
+  "dependencies": {
+    "@capacitor/android": "6.2.0",
+    "@capacitor/core": "6.2.0"
+  }
+}

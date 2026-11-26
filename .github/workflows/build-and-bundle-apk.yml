@@ -1,0 +1,153 @@
+name: Build & bundle APK
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: apk-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '22'
+  PYTHON_VERSION: '3.11'
+  APK_NAME: vet-spectra-v27.0.0.apk
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Web bundle — engine self-tests first, then the static build.
+  # ---------------------------------------------------------------------------
+  web:
+    name: Engines & web bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Browserless engine self-tests (16 JS assertions)
+        run: npm test
+
+      - name: Python mirror checks (JS/Python parity)
+        run: |
+          python3 -m compileall -q python_vet api
+          python3 scripts/check-engines.py
+
+      - name: Build static bundle
+        run: npm run build
+
+      - name: Assert the bundle is a real SPA build
+        run: |
+          test -f build/index.html
+          test -d build/_app/immutable
+          echo "bundle: $(find build -type f | wc -l) files, $(du -sh build | cut -f1)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-build
+          path: build
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # 2. Android — capacitor copy into the WebView asset dir, then assemble.
+  # ---------------------------------------------------------------------------
+  apk:
+    name: Release APK
+    needs: web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-build
+          path: build
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # Self-contained SDK install: no third-party action in the critical path,
+      # and the exact platform/build-tools AGP 8.5 needs.
+      - name: Install Android SDK 34
+        run: |
+          set -euo pipefail
+          SDK_ROOT="$HOME/android-sdk"
+          mkdir -p "$SDK_ROOT/cmdline-tools"
+          curl -fsSL -o /tmp/cmdline-tools.zip \
+            https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          unzip -q /tmp/cmdline-tools.zip -d /tmp/cmdline-tools-src
+          rm -rf "$SDK_ROOT/cmdline-tools/latest"
+          mv /tmp/cmdline-tools-src/cmdline-tools "$SDK_ROOT/cmdline-tools/latest"
+          export ANDROID_HOME="$SDK_ROOT"
+          export ANDROID_SDK_ROOT="$SDK_ROOT"
+          SDKM="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --sdk_root="$SDK_ROOT" --licenses > /dev/null 2>&1 || true
+          "$SDKM" --sdk_root="$SDK_ROOT" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          "$SDKM" --sdk_root="$SDK_ROOT" --list_installed | sed -n '1,14p'
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Copy the web bundle into the Capacitor platform
+        run: |
+          npx cap copy android
+          test -f android/app/src/main/assets/public/index.html
+          test -f android/app/src/main/assets/capacitor.config.json
+          echo "assets: $(find android/app/src/main/assets/public -type f | wc -l) files"
+
+      - name: Assemble debug APK
+        working-directory: android
+        run: gradle assembleDebug --no-daemon --stacktrace --warning-mode=summary
+
+      - name: Publish the APK as a workflow artifact
+        run: |
+          APK_PATH=$(find android/app/build/outputs/apk/debug -name '*.apk' | head -1)
+          if [ -z "$APK_PATH" ]; then echo "No APK produced"; find android/app/build/outputs -maxdepth 3 -type f; exit 1; fi
+          mkdir -p dist
+          cp "$APK_PATH" "dist/${APK_NAME}"
+          ls -lh "dist/${APK_NAME}"
+          # sanity: a real APK is a zip starting with PK and contains classes.dex
+          head -c 2 "dist/${APK_NAME}" | grep -q PK
+          unzip -l "dist/${APK_NAME}" | grep -q "classes.dex"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vet-spectra-apk
+          path: dist/${{ env.APK_NAME }}
+          retention-days: 30
+
+      - name: Attach the APK to the GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/${{ env.APK_NAME }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
