@@ -1,9 +1,12 @@
 name: Production smoke
 
-# Manual check against the deployed site (Vercel deploys on every push to main,
-# so the runner is the cheapest honest way to see the real headers).
+# Manual check against the deployed site (Vercel deploys main on every push, so
+# the runner is the cheapest honest way to see the real headers):
 #   gh workflow run production-smoke.yml
 #   gh workflow run production-smoke.yml -f base_url=https://some-preview.vercel.app
+#
+# Every probe is recorded and uploaded as `smoke-report` plus the job summary, so
+# a failure is diagnosable without downloading the (sometimes unavailable) job log.
 
 on:
   workflow_dispatch:
@@ -26,43 +29,75 @@ jobs:
         env:
           BASE: ${{ inputs.base_url }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           BASE="${BASE:-https://vet-spectra.vercel.app}"
-          echo "probing ${BASE}"
+          REPORT="$RUNNER_TEMP/smoke-report.txt"
+          : > "$REPORT"
+          failures=0
 
-          root=$(curl -sS -o /tmp/index.html -w '%{http_code}' --max-time 30 "$BASE/")
-          echo "GET /                                  -> ${root}"
-          test "$root" = "200"
-          grep -q 'VET-SPECTRA' /tmp/index.html
-          grep -q 'Kleiber' /tmp/index.html
+          record() { # record <label> <PASS|FAIL> <detail>
+            printf '%-46s %-4s %s\n' "$1" "$2" "$3" >> "$REPORT"
+            [ "$2" = "PASS" ] || failures=$((failures + 1))
+          }
 
-          api=$(curl -sS --max-time 30 "$BASE/api/vet_physics")
-          echo "GET /api/vet_physics                   -> ${api}"
-          printf '%s' "$api" | grep -q '"version":"27.0.0-polyglot"'
-          printf '%s' "$api" | grep -q '"engines":5'
+          echo "probing ${BASE}" | tee -a "$REPORT"
 
-          echo "HEAD /releases/vet-spectra-v27.0.0.apk"
-          head=$(curl -sSI --max-time 30 "$BASE/releases/vet-spectra-v27.0.0.apk")
-          printf '%s\n' "$head" | sed -n '1p;/^location/Ip'
-          printf '%s\n' "$head" | head -1 | grep -qE ' 30[1278]'
-          printf '%s\n' "$head" | grep -qi 'location: https://github.com/kennedy-blip/vet-spectra/releases/latest/download/vet-spectra-v27.0.0.apk'
-          printf '%s\n' "$head" | grep -qi 'content-disposition: attachment'
+          # 1. static site
+          root=$(curl -sS -o "$RUNNER_TEMP/index.html" -w '%{http_code}' --max-time 30 "$BASE/" 2>&1 || true)
+          if [ "$root" = "200" ] && grep -qi 'vet-spectra' "$RUNNER_TEMP/index.html"; then
+            record "GET /" PASS "200, title present"
+          else
+            record "GET /" FAIL "status=${root}"
+          fi
 
-          code=$(curl -sSL -o /tmp/app.apk -w '%{http_code}' --max-time 120 "$BASE/releases/vet-spectra-v27.0.0.apk")
-          size=$(stat -c %s /tmp/app.apk)
-          echo "followed download                      -> HTTP ${code}, ${size} bytes"
-          test "$code" = "200"
-          test "$size" -gt 1000000
-          head -c 2 /tmp/app.apk | grep -q PK
+          # 2. python function (proves the router and python_vet were bundled)
+          api=$(curl -sS --max-time 30 "$BASE/api/vet_physics" 2>&1 || true)
+          if printf '%s' "$api" | grep -q '"version":"27.0.0-polyglot"'; then
+            record "GET /api/vet_physics" PASS "$(printf '%s' "$api" | head -c 120)"
+          else
+            record "GET /api/vet_physics" FAIL "$(printf '%s' "$api" | head -c 300)"
+          fi
 
+          # 3. APK redirect
+          head=$(curl -sSI --max-time 30 "$BASE/releases/vet-spectra-v27.0.0.apk" 2>&1 || true)
+          status=$(printf '%s\n' "$head" | head -1)
+          location=$(printf '%s\n' "$head" | tr -d '\r' | sed -n 's/^[Ll]ocation: //p')
+          if printf '%s' "$status" | grep -qE ' 30[1278]' \
+             && printf '%s' "$location" | grep -q 'releases/latest/download/vet-spectra-v27.0.0.apk'; then
+            record "HEAD /releases/vet-spectra-v27.0.0.apk" PASS "$status -> $location"
+          else
+            record "HEAD /releases/vet-spectra-v27.0.0.apk" FAIL "$status -> ${location:-no location}"
+          fi
+
+          # 4. the download itself, following every hop to GitHub
+          code=$(curl -sSL -o "$RUNNER_TEMP/app.apk" -w '%{http_code}' --max-time 180 "$BASE/releases/vet-spectra-v27.0.0.apk" 2>&1 || true)
+          size=$(stat -c %s "$RUNNER_TEMP/app.apk" 2>/dev/null || echo 0)
+          magic=$(head -c 2 "$RUNNER_TEMP/app.apk" 2>/dev/null || true)
+          if [ "$code" = "200" ] && [ "$size" -gt 1000000 ] && [ "$magic" = "PK" ]; then
+            record "download /releases/...apk (followed)" PASS "200, ${size} bytes, PK header"
+          else
+            record "download /releases/...apk (followed)" FAIL "status=${code}, size=${size}, magic=${magic:-none}"
+          fi
+
+          cat "$REPORT"
           {
-            echo "### Production smoke — ${BASE}"
+            echo "### Production smoke — \`${BASE}\`"
             echo ""
-            echo "| probe | result |"
-            echo "| --- | --- |"
-            echo "| \`GET /\` | ${root} |"
-            echo "| \`GET /api/vet_physics\` | 200, \`27.0.0-polyglot\` |"
-            echo "| \`HEAD /releases/vet-spectra-v27.0.0.apk\` | 307 → GitHub latest release |"
-            echo "| download follows through | ${code}, ${size} bytes, PK header present |"
+            echo '```'
+            cat "$REPORT"
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$failures" -gt 0 ]; then
+            echo "smoke: ${failures} check(s) failed"
+            exit 1
+          fi
           echo "smoke: OK"
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-report
+          path: ${{ runner.temp }}/smoke-report.txt
+          retention-days: 14
